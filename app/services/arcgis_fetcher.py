@@ -11,65 +11,80 @@ from app.services.prediction_service import predict_for_station
 
 logger = logging.getLogger(__name__)
 
-ARCGIS_URL = "https://services3.arcgis.com/J7ZFXmR8rSmQ3FGf/arcgis/rest/services/gauges_2_view/FeatureServer/0/query?where=1%3D1&outFields=*&f=json"
+ARCGIS_URL = "https://services3.arcgis.com/J7ZFXmR8rSmQ3FGf/arcgis/rest/services/gauges_2_view/FeatureServer/0/query?where=1%3D1&outFields=*&orderByFields=CreationDate%20DESC&f=json"
 
 def clean_name(name: str) -> str:
-    """Normalize names to match the database exactly (e.g. ignoring spaces/brackets)."""
+    """Normalize names to match the database exactly."""
     import re
     n = name.lower()
     match = re.search(r'\\((.*?)\\)', n)
     if match:
         n = match.group(1).strip()
-    return n.strip().replace(" ", "")
+    return n.strip().replace(" ", "").replace("th", "t")
 
 def fetch_and_process(db: Session = None):
-    """
-    1. Fetch live features from ArcGIS.
-    2. Map gauge names to DB `station_id`.
-    3. Insert into `live_observations`.
-    4. Trigger 3H / 12H predictions for each updated station.
-    """
     close_db = False
     if db is None:
         db = SessionLocal()
         close_db = True
 
     try:
-        req = urllib.request.Request(ARCGIS_URL, headers={'User-Agent': 'Mozilla/5.0'})
-        response = urllib.request.urlopen(req, timeout=10)
-        data = json.loads(response.read())
-        features = data.get("features", [])
-        
-        # Pull all valid stations from DB to memory for matching
         db_stations = db.execute(text("SELECT station_id, station_name FROM stations")).fetchall()
         db_station_map = {clean_name(row[1]): row for row in db_stations}
         db_raw_names = {row[1].lower(): row for row in db_stations}
 
         inserted_count = 0
         predictions_updated = 0
-        now = datetime.utcnow()
+        
+        updated_station_ids = set()
+        matched_station_info = {}
 
-        for f in features:
+        offset = 0
+        has_more = True
+        all_features = []
+        
+        while has_more and offset < 5000:
+            paginated_url = f"{ARCGIS_URL}&resultOffset={offset}&resultRecordCount=1000"
+            req = urllib.request.Request(paginated_url, headers={'User-Agent': 'Mozilla/5.0'})
+            response = urllib.request.urlopen(req, timeout=10)
+            data = json.loads(response.read())
+            features = data.get("features", [])
+            
+            if not features:
+                break
+                
+            all_features.extend(features)
+            has_more = data.get("exceededTransferLimit", len(features) == 1000)
+            offset += 1000
+
+        for f in all_features:
             attr = f.get("attributes", {})
             gauge = attr.get("gauge")
             water_level = attr.get("water_level")
             rainfall = attr.get("rain_fall")
+            creation_date_ms = attr.get("CreationDate") or attr.get("EditDate")
+            
+            # Default to now if API failed to provide time, else convert ms to datetime
+            if creation_date_ms:
+                try:
+                    obs_at = datetime.utcfromtimestamp(creation_date_ms / 1000.0)
+                except:
+                    obs_at = datetime.utcnow()
+            else:
+                obs_at = datetime.utcnow()
 
             # Validate reading exists
             if not gauge or (water_level is None and rainfall is None):
                 continue
             
-            # Map station name using strict matching logic developed earlier
             gauge_clean = clean_name(str(gauge))
             matched_row = None
             
-            # 1. Exact or partial raw match
             for raw_name, row in db_raw_names.items():
                 if raw_name in gauge.lower() or str(gauge).lower() in raw_name:
                     matched_row = row
                     break
             
-            # 2. Clean Name match
             if not matched_row:
                 for clean_db_name, row in db_station_map.items():
                     if clean_db_name in gauge_clean or gauge_clean in clean_db_name:
@@ -80,10 +95,10 @@ def fetch_and_process(db: Session = None):
                 continue
                 
             station_id, station_name = matched_row
+            matched_station_info[station_id] = matched_row
 
             # Insert into live_observations
             try:
-                # Basic dedup check (we just enforce uniqueness by time in DB)
                 db.execute(
                     text("""
                         INSERT INTO live_observations (station_id, observed_at, water_level, rainfall_mm, raw_payload, source)
@@ -92,27 +107,33 @@ def fetch_and_process(db: Session = None):
                     """),
                     {
                         "sid": station_id,
-                        "obs_at": now,
+                        "obs_at": obs_at,
                         "wl": water_level,
                         "rain": rainfall,
                         "raw": json.dumps(attr)
                     }
                 )
-                db.commit()
                 inserted_count += 1
+                updated_station_ids.add(station_id)
+            except Exception as e:
+                logger.error(f"Failed to insert {gauge}: {e}")
+                db.rollback()
+                continue
                 
-                # Fetch threshold limits for this station perfectly
-                station_metadata = db.execute(text(
-                    "SELECT minor_flood_level, major_flood_level FROM stations WHERE station_id = :sid"
-                ), {"sid": station_id}).fetchone()
+        db.commit()
 
-                # Generate live predictions for the newly added data!
+        # Run AI predictions ONLY ONCE for each modified station
+        for sid in updated_station_ids:
+            try:
+                s_name = matched_station_info[sid][1]
+                station_meta = db.execute(text("SELECT minor_flood_level, major_flood_level FROM stations WHERE station_id = :sid"), {"sid": sid}).fetchone()
+                
                 result = predict_for_station(
                     db=db,
-                    station_id=station_id,
-                    station_name=station_name,
-                    minor_flood=station_metadata[0] or 0.0,
-                    major_flood=station_metadata[1] or 0.0
+                    station_id=sid,
+                    station_name=s_name,
+                    minor_flood=station_meta[0] or 0.0,
+                    major_flood=station_meta[1] or 0.0
                 )
                 
                 if "error" not in result:
