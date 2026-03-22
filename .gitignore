@@ -3,3 +3,20 @@
 
 # Except the main README.md which should be committed
 !README.md
+
+# Python virtual environment
+venv/
+
+# Environment variables (contains DB password!)
+.env
+
+# Large data files
+*.csv
+processed_training_data.csv
+
+# Trained model files (too large for git)
+models/
+
+# Python cache
+__pycache__/
+*.pyc
