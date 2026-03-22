@@ -1,0 +1,5 @@
+# Ignore all Markdown scratch files
+*.md
+
+# Except the main README.md which should be committed
+!README.md
