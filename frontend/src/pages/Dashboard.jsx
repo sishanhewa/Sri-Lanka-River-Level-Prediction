@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, AlertTriangle, CheckCircle, Droplets, CloudRain, Clock, ChevronRight } from 'lucide-react';
 import { getAllStationStatus } from '../services/api';
+import SystemLogViewer from '../components/SystemLogViewer';
 
 export default function Dashboard() {
   const [stations, setStations] = useState([]);
@@ -123,6 +124,11 @@ export default function Dashboard() {
           })}
         </div>
       )}
+      
+      {/* System Logs Section */}
+      <div className="pb-10">
+        <SystemLogViewer />
+      </div>
     </div>
   );
 }

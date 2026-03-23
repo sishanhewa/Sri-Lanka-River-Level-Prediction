@@ -158,11 +158,32 @@ def fetch_and_process(db: Session = None):
                 db.rollback()
                 logger.error(f"Failed to process {station_name}: {e}")
 
+        # Log the sync event to the database
+        db.execute(text("""
+            INSERT INTO sync_logs (status, inserted_records, predictions_run, message) 
+            VALUES ('success', :inserted, :preds, :msg)
+        """), {
+            "inserted": inserted_count,
+            "preds": predictions_updated,
+            "msg": f"Inserted {inserted_count} new records and ran {predictions_updated} predictions"
+        })
+        db.commit()
+
         logger.info(f"ArcGIS Sync Complete: Inserted {inserted_count} new records and ran {predictions_updated} predictions")
         return {"status": "success", "inserted_records": inserted_count, "predictions_run": predictions_updated}
 
     except Exception as e:
         logger.error(f"ArcGIS fetcher crashed: {e}")
+        if db:
+            try:
+                db.execute(text("""
+                    INSERT INTO sync_logs (status, inserted_records, predictions_run, message) 
+                    VALUES ('error', 0, 0, :msg)
+                """), {"msg": str(e)})
+                db.commit()
+            except Exception as log_e:
+                logger.error(f"Failed to write error to sync_logs: {log_e}")
+                
         return {"status": "error", "message": str(e)}
     
     finally:

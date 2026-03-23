@@ -114,3 +114,63 @@ def get_all_station_status(db: Session = Depends(get_db)):
         }
         for r in rows
     ]
+
+
+@router.get("/{station_id}/accuracy")
+def get_forecast_accuracy(station_id: int, hours: int = 48, db: Session = Depends(get_db)):
+    """
+    Compare past AI predictions against actual water levels recorded at the target time.
+    For each past prediction (3H and 12H), looks up the closest actual observation
+    within ±30 minutes of the prediction's target timestamp.
+    Returns null for 'actual' when no observation exists (API was offline).
+    """
+    safe_hours = str(min(hours, 168))
+    sql = text("""
+        WITH preds AS (
+            SELECT 
+                prediction_time,
+                horizon_hours,
+                predicted_water_level,
+                prediction_time + (horizon_hours * INTERVAL '1 hour') AS target_time
+            FROM predictions
+            WHERE station_id = :sid
+              AND prediction_time >= (NOW() AT TIME ZONE 'UTC') - INTERVAL ':h hours'
+        ),
+        all_obs AS (
+            SELECT observed_at, water_level FROM historical_observations WHERE station_id = :sid
+            UNION ALL
+            SELECT observed_at, water_level FROM live_observations WHERE station_id = :sid
+        )
+        SELECT 
+            p.prediction_time,
+            p.target_time,
+            p.horizon_hours,
+            p.predicted_water_level,
+            o.water_level AS actual_water_level
+        FROM preds p
+        LEFT JOIN LATERAL (
+            SELECT water_level
+            FROM all_obs
+            WHERE ABS(EXTRACT(EPOCH FROM (observed_at - p.target_time))) < 1800
+            ORDER BY ABS(EXTRACT(EPOCH FROM (observed_at - p.target_time))) ASC
+            LIMIT 1
+        ) o ON true
+        ORDER BY p.target_time ASC, p.horizon_hours ASC
+    """.replace(":h", safe_hours))
+    rows = db.execute(sql, {"sid": station_id}).fetchall()
+
+    result = []
+    for r in rows:
+        predicted = r[3]
+        actual = r[4]
+        error = round(abs(predicted - actual), 4) if actual is not None else None
+        result.append({
+            "prediction_time": r[0].isoformat() if r[0] else None,
+            "target_time": r[1].isoformat() if r[1] else None,
+            "horizon_hours": r[2],
+            "predicted": round(predicted, 4) if predicted else None,
+            "actual": round(actual, 4) if actual else None,
+            "error": error,
+        })
+    return result
+

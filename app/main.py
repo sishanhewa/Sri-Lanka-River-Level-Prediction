@@ -17,7 +17,7 @@ scheduler = BackgroundScheduler()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Start the scheduler on app boot
-    scheduler.add_job(fetch_and_process, 'interval', minutes=15, id='arcgis_sync', replace_existing=True)
+    scheduler.add_job(fetch_and_process, 'cron', minute='*/15', id='arcgis_sync', replace_existing=True)
     scheduler.start()
     yield
     # Shutdown the scheduler on app shutdown
@@ -54,3 +54,16 @@ def trigger_arcgis_sync(background_tasks: BackgroundTasks, db: Session = Depends
     """Manually trigger an immediate sync of the ArcGIS live data."""
     # We run it synchronously here so the endpoint can return the result
     return fetch_and_process(db=db)
+
+@app.get("/system/logs", tags=["System"])
+def get_system_logs(db: Session = Depends(get_db)):
+    """Fetch the sync logs for the last 24 hours."""
+    from sqlalchemy import text
+    logs = db.execute(text("SELECT sync_time, status, inserted_records, predictions_run, message FROM sync_logs WHERE sync_time >= NOW() - INTERVAL '24 HOURS' ORDER BY sync_time DESC LIMIT 100")).fetchall()
+    return [{
+        "sync_time": l[0],
+        "status": l[1],
+        "inserted_records": l[2],
+        "predictions_run": l[3],
+        "message": l[4]
+    } for l in logs]

@@ -76,3 +76,13 @@ CREATE TABLE IF NOT EXISTS simulation_results (
 CREATE INDEX IF NOT EXISTS idx_hist_station_time ON historical_observations(station_id, observed_at);
 CREATE INDEX IF NOT EXISTS idx_live_station_time ON live_observations(station_id, observed_at);
 CREATE INDEX IF NOT EXISTS idx_pred_station_time ON predictions(station_id, prediction_time);
+
+-- 7. Sync Logs: Tracks the 15-minute fetcher execution
+CREATE TABLE IF NOT EXISTS sync_logs (
+    id SERIAL PRIMARY KEY,
+    sync_time TIMESTAMP DEFAULT NOW(),
+    status VARCHAR(50),
+    inserted_records INT,
+    predictions_run INT,
+    message TEXT
+);

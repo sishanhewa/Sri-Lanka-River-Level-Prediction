@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_URL = 'http://localhost:8000';
+const API_URL = 'http://104.208.67.128:8000';
 
 const apiClient = axios.create({
   baseURL: API_URL,
@@ -36,5 +36,15 @@ export const getAllStationStatus = async () => {
 
 export const syncArcgisData = async () => {
   const response = await apiClient.post('/ingest/arcgis-sync');
+  return response.data;
+};
+
+export const getStationAccuracy = async (id, hours = 48) => {
+  const response = await apiClient.get(`/stations/${id}/accuracy?hours=${hours}`);
+  return response.data;
+};
+
+export const getSystemLogs = async () => {
+  const response = await apiClient.get('/system/logs');
   return response.data;
 };
